@@ -105,6 +105,14 @@ jobs:
         shell: bash
         run: sed -i 's/mingw-w64-x86_64-diffutils/diffutils/g' "$TBUILD/$REPO_NAME/$PREPARE_PATH"
 
+      - name: Detect Visual Studio path.
+        shell: pwsh
+        run: |
+          $vsPath = (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" | Select-Object -First 1).FullName
+          $rootPath = $vsPath -replace '\\VC\\Auxiliary\\Build\\vcvarsall\.bat$', '\'
+          echo "GYP_MSVS_OVERRIDE_PATH=$rootPath" >> $env:GITHUB_ENV
+          echo "Detected VS: $rootPath"
+
       - name: Libraries.
         env:
           GYP_MSVS_OVERRIDE_PATH: 'C:\Program Files\Microsoft Visual Studio\18\Enterprise\'
