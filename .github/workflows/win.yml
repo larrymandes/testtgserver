@@ -47,11 +47,22 @@ jobs:
         shell: bash
         run: |
           DOCPATH="$TBUILD/$REPO_NAME/docs/building-win.md"
-          SDK="$(grep "SDK version" "$DOCPATH" | sed -r 's/.*\*\*\*(.*)\*\* SDK version.*/\1/')"
-          if [ -z "$SDK" ]; then
-            echo "ERROR: Could not detect Windows SDK version from $DOCPATH"
+          if [ ! -f "$DOCPATH" ]; then
+            echo "ERROR: Documentation file not found: $DOCPATH"
             exit 1
           fi
+
+          # Extract only the four-part numeric SDK version from a sentence such as:
+          # The build is done in **Visual Studio 2026** with **10.0.26100.0** SDK version.
+          SDK_LINE="$(grep -m1 'SDK version' "$DOCPATH" || true)"
+          SDK="$(printf '%s\n' "$SDK_LINE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | tail -n1 || true)"
+          if ! [[ "$SDK" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Could not extract a numeric Windows SDK version from $DOCPATH"
+            echo "Matched line: $SDK_LINE"
+            exit 1
+          fi
+
+          echo "Detected Windows SDK: $SDK"
           echo "SDK=$SDK" >> "$GITHUB_ENV"
 
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
@@ -71,11 +82,12 @@ jobs:
         with:
           arch: ${{ matrix.arch }}
           sdk: ${{ env.SDK }}
+          toolset: 14.44
 
       - name: NuGet sources
         run: |
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
-          nuget sources Add -Source https://api.nuget.org/v3/index.json
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
       # Restore with a per-attempt key prefix. The save steps at the end use a
       # unique run/attempt key, so failed builds can publish their partial cache.
@@ -130,11 +142,34 @@ jobs:
             'diffutils'
           )
 
+          # Do not delete a valid cached libvpx checkout after a failed build.
+          # Keep its untracked MSBuild objects so make can continue incrementally.
+          $removeTarget = "commands = removeDir(stage['name']) + '\n' + stage['commands']"
+          $removeReplacement = @'
+          if win and stage['name'] == 'libvpx' and os.path.isdir(os.path.join(stage['directory'], 'libvpx', '.git')):
+                      commands = stage['commands']
+                  else:
+                      commands = removeDir(stage['name']) + '\n' + stage['commands']
+          '@
+
+          if (-not $content.Contains($removeTarget)) {
+            throw "Could not find prepare.py stage cleanup line; refusing to disable cleanup blindly."
+          }
+          $content = $content.Replace($removeTarget, $removeReplacement.Trim())
+
+          # reset only tracked source files; keep untracked x64/Debug build objects.
+          $checkoutTarget = 'git checkout v1.14.1'
+          if (-not $content.Contains($checkoutTarget)) {
+            throw "Could not find libvpx v1.14.1 checkout command."
+          }
+          $content = $content.Replace($checkoutTarget, 'git reset --hard v1.14.1')
+
           # prepare.py installs the current MSYS2 NASM (3.02). Replace its
-          # libvpx invocation so it downgrades the actual MSYS2 package first.
+          # libvpx invocation so it downgrades MSYS2 NASM and clears possibly
+          # corrupt object files left by the failing 3.02 assembler.
           $target = 'bash --login ../patches/build_libvpx_win.sh'
           $replacement = @'
-          bash --login -c "pacman -U --noconfirm https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-nasm-2.16.03-1-any.pkg.tar.zst && echo NASM version used for libvpx: && which nasm && nasm -v && bash ../patches/build_libvpx_win.sh"
+          bash --login -c "pacman -U --noconfirm https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-nasm-2.16.03-1-any.pkg.tar.zst && echo NASM version used for libvpx: && which nasm && nasm -v && rm -f x64/Debug/vpx/*.obj x64/Debug/vpxrc/*.obj && bash ../patches/build_libvpx_win.sh"
           '@
 
           if (-not $content.Contains($target)) {
@@ -144,11 +179,12 @@ jobs:
           $content = $content.Replace($target, $replacement.Trim())
           Set-Content -Path $prep -Value $content -NoNewline -Encoding utf8NoBOM
 
-          if (-not $content.Contains('mingw-w64-x86_64-nasm-2.16.03-1-any.pkg.tar.zst')) {
-            throw "NASM downgrade command was not inserted."
+          if (-not $content.Contains('mingw-w64-x86_64-nasm-2.16.03-1-any.pkg.tar.zst') -or
+              -not $content.Contains("git reset --hard v1.14.1")) {
+            throw "One or more incremental libvpx fixes were not inserted."
           }
 
-          Write-Host "prepare.py patched. libvpx will use the MSYS2 NASM 2.16.03 package."
+          Write-Host "prepare.py patched: NASM 2.16.03 pinned; partial libvpx checkout retained; stale object files cleared."
 
       - name: Detect Visual Studio path
         shell: pwsh
@@ -173,6 +209,15 @@ jobs:
           "GYP_MSVS_OVERRIDE_PATH=$rootPath" >> $env:GITHUB_ENV
           "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
           Write-Host "Detected Visual Studio root: $rootPath"
+
+      - name: Build third-party libraries
+        run: |
+          for /L %%i in (1,1,1) do (
+            call %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent ${{ matrix.qt }}
+            if not errorlevel 1 exit /b 0
+            echo Attempt %%i failed.
+          )
+          exit /b 1
 
       - name: Read configuration matrix
         shell: bash
