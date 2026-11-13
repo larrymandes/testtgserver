@@ -120,7 +120,12 @@ jobs:
 
       - name: Libraries.
         run: |
-          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat skip-release silent ${{ matrix.qt }}
+          for /L %%i in (1,1,3) do (
+            call %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat skip-release silent ${{ matrix.qt }}
+            if not errorlevel 1 exit /b 0
+            echo Attempt %%i failed, retrying...
+          )
+          exit /b 1
 
       - name: Read configuration matrix.
         shell: bash
