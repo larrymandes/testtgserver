@@ -19,7 +19,6 @@ jobs:
     defaults:
       run:
         shell: cmd
-
     steps:
       - name: Prepare directories.
         run: |
@@ -95,7 +94,7 @@ jobs:
           key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-${{ env.CACHE_KEY }}
           restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-
 
-      - name: Patch prepare.py (diffutils, sequential libvpx make).
+      - name: Patch prepare.py (diffutils, nasm 2.16.03 for libvpx).
         shell: pwsh
         run: |
           $prep = "$env:TBUILD\$env:REPO_NAME\$env:PREPARE_PATH"
@@ -103,7 +102,10 @@ jobs:
           $content = $content.Replace('mingw-w64-x86_64-diffutils', 'diffutils')
           $target = 'bash --login ../patches/build_libvpx_win.sh'
           $fix = @'
-          python -c "import re; p='../patches/build_libvpx_win.sh'; s=open(p,newline='').read(); open(p,'w',newline='').write(re.sub(r'make -j\S+','make -j1',s))"
+          powershell -Command "iwr -OutFile ./nasm216.zip https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip"
+          powershell -Command "Expand-Archive -Force ./nasm216.zip ./nasm216"
+          SET "PATH=%CD%\\nasm216\\nasm-2.16.03;%PATH%"
+          nasm -v
           bash --login ../patches/build_libvpx_win.sh
           '@
           if (-not $content.Contains($target)) { throw "Target string not found in prepare.py" }
@@ -122,7 +124,7 @@ jobs:
 
       - name: Libraries.
         run: |
-          for /L %%i in (1,1,3) do (
+          for /L %%i in (1,1,1) do (
             call %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent ${{ matrix.qt }}
             if not errorlevel 1 exit /b 0
             echo Attempt %%i failed, retrying...
@@ -152,23 +154,23 @@ jobs:
             echo "Generator from matrix: $GENERATOR"
             ARTIFACT_NAME="${ARTIFACT_NAME} ${{ matrix.generator }}"
           fi
-          echo "TDESKTOP_BUILD_GENERATOR=$GENERATOR" >> $GITHUB_ENV
+          echo "TDESKTOP_BUILD_GENERATOR=$GENERATOR" >> $env:GITHUB_ENV
           [ -n "$GENERATOR" ] && ARCH=""
-          echo "TDESKTOP_BUILD_ARCH=$ARCH" >> $GITHUB_ENV
+          echo "TDESKTOP_BUILD_ARCH=$ARCH" >> $env:GITHUB_ENV
           DEFINE=""
           if [ -n "${{ matrix.defines }}" ]; then
             DEFINE="-D ${{ matrix.defines }}=ON"
             echo "Define from matrix: $DEFINE"
             ARTIFACT_NAME="${ARTIFACT_NAME} ${{ matrix.defines }}"
           fi
-          echo "TDESKTOP_BUILD_DEFINE=$DEFINE" >> $GITHUB_ENV
-          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+          echo "TDESKTOP_BUILD_DEFINE=$DEFINE" >> $env:GITHUB_ENV
+          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $env:GITHUB_ENV
           API="-D TDESKTOP_API_TEST=ON"
           if [ "$GITHUB_REF" == 'refs/heads/nightly' ]; then
             echo "Use the open credentials."
             API="-D TDESKTOP_API_ID=611335 -D TDESKTOP_API_HASH=d524b414d21f4d37f08684c1df41ac9c"
           fi
-          echo "TDESKTOP_BUILD_API=$API" >> $GITHUB_ENV
+          echo "TDESKTOP_BUILD_API=$API" >> $env:GITHUB_ENV
 
       - name: Free up some disk space.
         shell: bash
