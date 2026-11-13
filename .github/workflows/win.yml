@@ -7,73 +7,91 @@ jobs:
   windows:
     name: Windows
     runs-on: windows-2022
+    timeout-minutes: 360
+
     strategy:
       matrix:
         arch: [x64]
         qt: [qt6]
         generator: [""]
+
     env:
       UPLOAD_ARTIFACT: "true"
       ONLY_CACHE: "false"
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+
     defaults:
       run:
         shell: cmd
+
     steps:
-      - name: Prepare directories.
+      - name: Prepare directories
         run: |
-          mkdir %userprofile%\TBuild\Libraries
-          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
-          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
-          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
+          if not exist "%USERPROFILE%\TBuild\Libraries" mkdir "%USERPROFILE%\TBuild\Libraries"
+          if not exist "%GITHUB_WORKSPACE%\TBuild" mklink /d "%GITHUB_WORKSPACE%\TBuild" "%USERPROFILE%\TBuild"
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>"%GITHUB_ENV%"
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>"%GITHUB_ENV%"
 
-      - name: Get repository name.
+      - name: Get repository name
         shell: bash
-        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> "$GITHUB_ENV"
 
-      - name: Clone.
+      - name: Clone
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
+          fetch-depth: 0
+          path: TBuild/${{ env.REPO_NAME }}
 
-      - name: First set up.
+      - name: First set up
         shell: bash
         run: |
-          DOCPATH=$TBUILD/$REPO_NAME/docs/building-win.md
-          SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
-          echo "SDK=$SDK" >> $GITHUB_ENV
+          DOCPATH="$TBUILD/$REPO_NAME/docs/building-win.md"
+          SDK="$(grep "SDK version" "$DOCPATH" | sed -r 's/.*\*\*\*(.*)\*\* SDK version.*/\1/')"
+          if [ -z "$SDK" ]; then
+            echo "ERROR: Could not detect Windows SDK version from $DOCPATH"
+            exit 1
+          fi
+          echo "SDK=$SDK" >> "$GITHUB_ENV"
+
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
-          echo "windows-2022-toolset-v5" >> CACHE_KEY.txt
-          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
+
+          # Bump this marker when build-toolchain behavior changes.
+          echo "windows-2022-toolset-v5-nasm-2.16.03" >> CACHE_KEY.txt
+          echo "$(sha256sum "$TBUILD/$REPO_NAME/$PREPARE_PATH" | awk '{ print $1 }')" >> CACHE_KEY.txt
           echo "$SDK" >> CACHE_KEY.txt
-          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> "$GITHUB_ENV"
+
           echo "Configurate git for cherry-picks."
           git config --global user.email "you@example.com"
           git config --global user.name "Sample"
 
-      - uses: ilammy/msvc-dev-cmd@v1.13.0
-        name: Native Tools Command Prompt.
+      - name: Native Tools Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.arch }}
           sdk: ${{ env.SDK }}
 
-      - name: NuGet sources.
+      - name: NuGet sources
         run: |
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
-          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+          nuget sources Add -Source https://api.nuget.org/v3/index.json
 
-      - name: ThirdParty cache.
+      # Restore with a per-attempt key prefix. The save steps at the end use a
+      # unique run/attempt key, so failed builds can publish their partial cache.
+      - name: Restore ThirdParty cache
         id: cache-third-party
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-v5-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ runner.arch }}-third-party-v5-
+          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-v5-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.OS }}-${{ runner.arch }}-third-party-v5-${{ env.CACHE_KEY }}-
+            ${{ runner.OS }}-${{ runner.arch }}-third-party-v5-
 
-      - name: Libraries cache.
+      - name: Restore Libraries cache
         id: cache-libs
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.LibrariesPath }}\*
@@ -81,135 +99,223 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-v5-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-v5-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-v5-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.OS }}-${{ matrix.arch }}-libs-v5-${{ env.CACHE_KEY }}-
+            ${{ runner.OS }}-${{ matrix.arch }}-libs-v5-
 
-      - name: Qt cache.
+      - name: Restore Qt cache
         id: cache-qt
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-${{ env.CACHE_KEY }}-
+            ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-
 
-      - name: Patch prepare.py (diffutils, nasm 2.16.03 for libvpx).
+      - name: Patch prepare.py (diffutils and NASM 2.16.03)
         shell: pwsh
         run: |
-          $prep = "$env:TBUILD\$env:REPO_NAME\$env:PREPARE_PATH"
+          $prep = Join-Path $env:TBUILD "$env:REPO_NAME\$env:PREPARE_PATH"
+          if (-not (Test-Path $prep)) {
+            throw "prepare.py not found: $prep"
+          }
+
           $content = Get-Content $prep -Raw
-          $content = $content.Replace('mingw-w64-x86_64-diffutils', 'diffutils')
-          $target = 'bash --login ../patches/build_libvpx_win.sh'
-          $fix = @'
-          powershell -Command "iwr -OutFile ./nasm216.zip https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip"
-          powershell -Command "Expand-Archive -Force ./nasm216.zip ./nasm216"
-          SET "PATH=%CD%\\nasm216\\nasm-2.16.03;%PATH%"
-          nasm -v
-          bash --login ../patches/build_libvpx_win.sh
-          '@
-          if (-not $content.Contains($target)) { throw "Target string not found in prepare.py" }
-          $content = $content.Replace($target, $fix)
-          Set-Content $prep -Value $content -NoNewline
+          $content = $content.Replace(
+            'mingw-w64-x86_64-diffutils',
+            'diffutils'
+          )
 
-      - name: Detect Visual Studio path.
+          # prepare.py installs the current MSYS2 NASM (3.02). Replace its
+          # libvpx invocation so it downgrades the actual MSYS2 package first.
+          $target = 'bash --login ../patches/build_libvpx_win.sh'
+          $replacement = @'
+          bash --login -c "pacman -U --noconfirm https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-nasm-2.16.03-1-any.pkg.tar.zst && echo NASM version used for libvpx: && which nasm && nasm -v && bash ../patches/build_libvpx_win.sh"
+          '@
+
+          if (-not $content.Contains($target)) {
+            throw "Could not find libvpx build command in prepare.py; refusing to patch a different script."
+          }
+
+          $content = $content.Replace($target, $replacement.Trim())
+          Set-Content -Path $prep -Value $content -NoNewline -Encoding utf8NoBOM
+
+          if (-not $content.Contains('mingw-w64-x86_64-nasm-2.16.03-1-any.pkg.tar.zst')) {
+            throw "NASM downgrade command was not inserted."
+          }
+
+          Write-Host "prepare.py patched. libvpx will use the MSYS2 NASM 2.16.03 package."
+
+      - name: Detect Visual Studio path
         shell: pwsh
         run: |
-          $vsPath = (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Auxiliary\Build\vcvarsall.bat" | Select-Object -First 1).FullName
-          if (-not $vsPath) { throw "vcvarsall.bat not found" }
-          $rootPath = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $vsPath))) + '\'
-          echo "GYP_MSVS_OVERRIDE_PATH=$rootPath" >> $env:GITHUB_ENV
-          echo "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
-          echo "Detected VS: $rootPath"
+          $vsPath = (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Auxiliary\Build\vcvarsall.bat" |
+            Select-Object -First 1).FullName
 
-      - name: Libraries.
-        run: |
-          for /L %%i in (1,1,1) do (
-            call %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent ${{ matrix.qt }}
-            if not errorlevel 1 exit /b 0
-            echo Attempt %%i failed, retrying...
+          if (-not $vsPath) {
+            throw "vcvarsall.bat not found"
+          }
+
+          # vcvarsall.bat is under VSROOT\VC\Auxiliary\Build.
+          # Four parent operations are required to get VSROOT.
+          $rootPath = Split-Path -Parent (
+            Split-Path -Parent (
+              Split-Path -Parent (
+                Split-Path -Parent $vsPath
+              )
+            )
           )
-          exit /b 1
 
-      - name: Read configuration matrix.
+          "GYP_MSVS_OVERRIDE_PATH=$rootPath" >> $env:GITHUB_ENV
+          "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
+          Write-Host "Detected Visual Studio root: $rootPath"
+
+      - name: Read configuration matrix
         shell: bash
         run: |
           ARTIFACT_NAME="Telegram"
           ARCH=""
+
           if [ -n "${{ matrix.arch }}" ]; then
             case "${{ matrix.arch }}" in
-              x64_x86) ARCH="x86";;
-              arm64) ARCH="arm";;
-              *) ARCH="${{ matrix.arch }}";;
+              x64_x86) ARCH="x86" ;;
+              arm64) ARCH="arm" ;;
+              *) ARCH="${{ matrix.arch }}" ;;
             esac
             echo "Architecture from matrix: $ARCH"
             ARTIFACT_NAME="${ARTIFACT_NAME} ${{ matrix.arch }}"
           fi
+
           if [ -n "${{ matrix.qt }}" ]; then
             ARTIFACT_NAME="${ARTIFACT_NAME} ${{ matrix.qt }}"
           fi
+
           GENERATOR=""
           if [ -n "${{ matrix.generator }}" ]; then
             GENERATOR="-G \"${{ matrix.generator }}\""
             echo "Generator from matrix: $GENERATOR"
             ARTIFACT_NAME="${ARTIFACT_NAME} ${{ matrix.generator }}"
           fi
-          echo "TDESKTOP_BUILD_GENERATOR=$GENERATOR" >> $env:GITHUB_ENV
+
+          echo "TDESKTOP_BUILD_GENERATOR=$GENERATOR" >> "$GITHUB_ENV"
           [ -n "$GENERATOR" ] && ARCH=""
-          echo "TDESKTOP_BUILD_ARCH=$ARCH" >> $env:GITHUB_ENV
+
+          echo "TDESKTOP_BUILD_ARCH=$ARCH" >> "$GITHUB_ENV"
+
           DEFINE=""
           if [ -n "${{ matrix.defines }}" ]; then
             DEFINE="-D ${{ matrix.defines }}=ON"
             echo "Define from matrix: $DEFINE"
             ARTIFACT_NAME="${ARTIFACT_NAME} ${{ matrix.defines }}"
           fi
-          echo "TDESKTOP_BUILD_DEFINE=$DEFINE" >> $env:GITHUB_ENV
-          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $env:GITHUB_ENV
+
+          echo "TDESKTOP_BUILD_DEFINE=$DEFINE" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> "$GITHUB_ENV"
+
           API="-D TDESKTOP_API_TEST=ON"
-          if [ "$GITHUB_REF" == 'refs/heads/nightly' ]; then
+          if [ "$GITHUB_REF" = "refs/heads/nightly" ]; then
             echo "Use the open credentials."
             API="-D TDESKTOP_API_ID=611335 -D TDESKTOP_API_HASH=d524b414d21f4d37f08684c1df41ac9c"
           fi
-          echo "TDESKTOP_BUILD_API=$API" >> $env:GITHUB_ENV
 
-      - name: Free up some disk space.
+          echo "TDESKTOP_BUILD_API=$API" >> "$GITHUB_ENV"
+
+      - name: Free up some disk space
         shell: bash
-        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
+        run: |
+          find "$LibrariesPath" '(' '(' ! '(' \
+            -name '*.lib' -o \
+            -name '*.a' -o \
+            -name '*.exe' -o \
+            -name '*.h' -o \
+            -name '*.hpp' -o \
+            -name '*.inc' -o \
+            -name '*.cmake' -o \
+            -path '*/include/*' -o \
+            -path '*/objects-*' -o \
+            -path '*/cache_keys/*' -o \
+            -path '*/patches/*' \
+          ')' -type f ')' -o -empty ')' -delete
 
-      - name: Telegram Desktop build.
+      - name: Telegram Desktop build
         if: env.ONLY_CACHE == 'false'
         run: |
-          cd %TBUILD%\%REPO_NAME%\Telegram
+          cd "%TBUILD%\%REPO_NAME%\Telegram"
           call configure.bat ^
-          %TDESKTOP_BUILD_GENERATOR% ^
-          %TDESKTOP_BUILD_ARCH% ^
-          ${{ matrix.qt }} ^
-          %TDESKTOP_BUILD_API% ^
-          -D CMAKE_CONFIGURATION_TYPES=Release ^
-          -D CMAKE_COMPILE_WARNING_AS_ERROR=OFF ^
-          -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
-          -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
-          %TDESKTOP_BUILD_DEFINE%
-          cmake --build ..\out --config Release --parallel
+            %TDESKTOP_BUILD_GENERATOR% ^
+            %TDESKTOP_BUILD_ARCH% ^
+            ${{ matrix.qt }} ^
+            %TDESKTOP_BUILD_API% ^
+            -D CMAKE_CONFIGURATION_TYPES=Release ^
+            -D CMAKE_COMPILE_WARNING_AS_ERROR=OFF ^
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF ^
+            %TDESKTOP_BUILD_DEFINE%
+          if errorlevel 1 exit /b %errorlevel%
 
-      - name: Collect artifact.
-        if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
+          cmake --build ..\out --config Release --parallel
+          if errorlevel 1 exit /b %errorlevel%
+
+      - name: Collect artifact
+        if: env.ONLY_CACHE == 'false' && ((env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly'))
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:TBUILD "$env:REPO_NAME\out\Release"
+
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
+
           foreach ($f in @('Telegram.exe', 'Updater.exe')) {
             $src = Join-Path $out $f
-            if (-not (Test-Path $src)) { throw "Missing $src" }
+            if (-not (Test-Path $src)) {
+              throw "Missing build output: $src"
+            }
             Copy-Item $src -Destination artifact\
           }
+
           Get-ChildItem artifact
 
-      - name: Upload artifact.
-        if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
+      - name: Upload artifact
+        if: env.ONLY_CACHE == 'false' && ((env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly'))
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: artifact\
           if-no-files-found: error
+
+      # These are separate save actions with unique keys, and run after a
+      # failure as well. The next workflow attempt restores the newest prefix match.
+      - name: Save ThirdParty cache (even after failure)
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-v5-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save Libraries cache (even after failure)
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-v5-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save Qt cache (even after failure)
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
