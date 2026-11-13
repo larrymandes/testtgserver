@@ -45,7 +45,7 @@ jobs:
           SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
           echo "SDK=$SDK" >> $GITHUB_ENV
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
-          echo "windows-2022-toolset-v3" >> CACHE_KEY.txt
+          echo "windows-2022-toolset-v5" >> CACHE_KEY.txt
           echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
           echo "$SDK" >> CACHE_KEY.txt
           echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
@@ -69,8 +69,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-v3-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ runner.arch }}-third-party-v3-
+          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-v5-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ runner.arch }}-third-party-v5-
 
       - name: Libraries cache.
         id: cache-libs
@@ -82,8 +82,8 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-v3-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-v3-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-v5-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-v5-
 
       - name: Qt cache.
         id: cache-qt
@@ -92,12 +92,24 @@ jobs:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v3-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v3-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-
 
-      - name: Fix MSYS2 diffutils package name.
-        shell: bash
-        run: sed -i 's/mingw-w64-x86_64-diffutils/diffutils/g' "$TBUILD/$REPO_NAME/$PREPARE_PATH"
+      - name: Patch prepare.py for MSYS2 & libvpx install.
+        shell: pwsh
+        run: |
+          $prep = "$env:TBUILD\$env:REPO_NAME\$env:PREPARE_PATH"
+          $content = Get-Content $prep -Raw
+          $content = $content.Replace('mingw-w64-x86_64-diffutils', 'diffutils')
+
+          $target = 'bash --login ../patches/build_libvpx_win.sh'
+          $replacement = @'
+          python -c "p='../patches/build_libvpx_win.sh'; s=open(p).read(); s=s.replace('make -j\$NUMBER_OF_PROCESSORS install', 'make vpx.pc && mkdir -p \$FullScriptPath/../local/include/vpx \$FullScriptPath/../local/lib/pkgconfig && cp -f vpx/*.h \$FullScriptPath/../local/include/vpx/ && cp -f vpx.pc \$FullScriptPath/../local/lib/pkgconfig/ && cp -f x64/Release/vpxmt.lib \$FullScriptPath/../local/lib/ && cp -f x64/Debug/vpxmtd.lib \$FullScriptPath/../local/lib/ 2>/dev/null || true'); open(p,'w').write(s)"
+              bash --login ../patches/build_libvpx_win.sh
+          '@
+          if (-not $content.Contains($target)) { throw "Target string not found in prepare.py" }
+          $content = $content.Replace($target, $replacement)
+          Set-Content $prep -Value $content -NoNewline
 
       - name: Detect Visual Studio path.
         shell: pwsh
@@ -108,14 +120,6 @@ jobs:
           echo "GYP_MSVS_OVERRIDE_PATH=$rootPath" >> $env:GITHUB_ENV
           echo "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
           echo "Detected VS: $rootPath"
-
-      - name: Fix libvpx make jobs.
-        shell: bash
-        run: |
-          VPX_SCRIPT="$TBUILD/$REPO_NAME/Telegram/build/prepare/patches/build_libvpx_win.sh"
-          if [ -f "$VPX_SCRIPT" ]; then
-            sed -i 's/make -j[^ ]*/make -j1/g' "$VPX_SCRIPT"
-          fi
 
       - name: Libraries.
         run: |
