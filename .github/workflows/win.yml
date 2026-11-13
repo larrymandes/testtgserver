@@ -1,4 +1,4 @@
-name: Windows.
+name: Windows
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
 
   windows:
     name: Windows
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     strategy:
       matrix:
@@ -30,14 +30,14 @@ jobs:
           mkdir %userprofile%\TBuild\Libraries
           mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
           echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
-          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries${{ matrix.arch == 'x64' && '\win64' || '' }}>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
 
       - name: Get repository name.
         shell: bash
         run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
 
       - name: Clone.
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           submodules: recursive
           path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
@@ -51,6 +51,8 @@ jobs:
 
           sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
 
+          # Версия ключа кэша: меняйте v2 -> v3, чтобы сбросить кэш библиотек
+          echo "windows-2022-toolset-v2" >> CACHE_KEY.txt
           echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
           echo "$SDK" >> CACHE_KEY.txt
           echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
@@ -72,15 +74,15 @@ jobs:
 
       - name: ThirdParty cache.
         id: cache-third-party
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ runner.arch }}-third-party-
+          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-v2-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ runner.arch }}-third-party-v2-
 
       - name: Libraries cache.
         id: cache-libs
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: |
             ${{ env.LibrariesPath }}\*
@@ -88,18 +90,18 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-libs-v2-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-libs-v2-
 
       - name: Qt cache.
         id: cache-qt
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${{ env.CACHE_KEY }}
-          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-
+          key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v2-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v2-
 
       - name: Fix MSYS2 diffutils package name.
         shell: bash
@@ -108,15 +110,15 @@ jobs:
       - name: Detect Visual Studio path.
         shell: pwsh
         run: |
-          $vsPath = (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" | Select-Object -First 1).FullName
-          $rootPath = $vsPath -replace '\\VC\\Auxiliary\\Build\\vcvarsall\.bat$', '\'
+          $vsPath = (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Auxiliary\Build\vcvarsall.bat" | Select-Object -First 1).FullName
+          if (-not $vsPath) { throw "vcvarsall.bat not found" }
+          # .../Enterprise/VC/Auxiliary/Build/vcvarsall.bat -> .../Enterprise/
+          $rootPath = (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $vsPath))) + '\'
           echo "GYP_MSVS_OVERRIDE_PATH=$rootPath" >> $env:GITHUB_ENV
+          echo "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
           echo "Detected VS: $rootPath"
 
       - name: Libraries.
-        env:
-          GYP_MSVS_OVERRIDE_PATH: 'C:\Program Files\Microsoft Visual Studio\18\Enterprise\'
-          GYP_MSVS_VERSION: 2022
         run: |
           %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat skip-release silent ${{ matrix.qt }}
 
@@ -162,7 +164,7 @@ jobs:
           echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
 
           API="-D TDESKTOP_API_TEST=ON"
-          if [ $GITHUB_REF == 'refs/heads/nightly' ]; then
+          if [ "$GITHUB_REF" == 'refs/heads/nightly' ]; then
             echo "Use the open credentials."
             API="-D TDESKTOP_API_ID=611335 -D TDESKTOP_API_HASH=d524b414d21f4d37f08684c1df41ac9c"
           fi
@@ -191,16 +193,24 @@ jobs:
 
           cmake --build ..\out --config Debug --parallel
 
-      - name: Move artifact.
+      - name: Collect artifact.
         if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
+        shell: pwsh
         run: |
-          set OUT=%TBUILD%\%REPO_NAME%\out\Debug
-          mkdir artifact
-          move %OUT%\Telegram.exe artifact/
-          move %OUT%\Updater.exe artifact/
-      - uses: actions/upload-artifact@v7
-        name: Upload artifact.
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:TBUILD "$env:REPO_NAME\out\Debug"
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          foreach ($f in @('Telegram.exe', 'Updater.exe')) {
+            $src = Join-Path $out $f
+            if (-not (Test-Path $src)) { throw "Missing $src" }
+            Copy-Item $src -Destination artifact\
+          }
+          Get-ChildItem artifact
+
+      - name: Upload artifact.
         if: (env.UPLOAD_ARTIFACT == 'true') || (github.ref == 'refs/heads/nightly')
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: artifact\
+          if-no-files-found: error
