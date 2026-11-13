@@ -1,0 +1,67 @@
+name: Diagnostic Windows Build Env
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo (shallow)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 1. Runner OS, Tools & Visual Studio
+        shell: pwsh
+        run: |
+          Write-Host "=== OS & ENV ==="
+          [System.Environment]::OSVersion.VersionString
+          cmake --version
+          python --version
+          git --version
+          Write-Host "=== VISUAL STUDIO ==="
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            & $vswhere -all -products * -property displayName
+            & $vswhere -all -products * -property installationPath
+            & $vswhere -all -products * -property installationVersion
+          }
+
+      - name: 2. Repo Structure & Existing Workflows
+        shell: pwsh
+        run: |
+          Write-Host "=== ROOT FILES ==="
+          Get-ChildItem -Depth 2 | Select-Object FullName
+          Write-Host "=== WORKFLOWS ==="
+          if (Test-Path ".github/workflows") {
+            Get-ChildItem ".github/workflows" | ForEach-Object {
+              Write-Host "--- FILE: $($_.Name) ---"
+              Get-Content $_.FullName
+            }
+          }
+
+      - name: 3. Prepare Scripts & libvpx Patch
+        shell: pwsh
+        run: |
+          Write-Host "=== SEARCH build_libvpx ==="
+          $files = Get-ChildItem -Recurse -Include "*libvpx*","*prepare*","*build*" -File | Where-Object { $_.FullName -notmatch "\\.git\\" }
+          $files | Select-Object FullName
+
+          $vpxScript = Get-ChildItem -Recurse -Filter "build_libvpx_win.sh" -File | Select-Object -First 1
+          if ($vpxScript) {
+            Write-Host "=== CONTENT OF $($vpxScript.FullName) ==="
+            Get-Content $vpxScript.FullName
+          }
+
+          $vpxPatches = Get-ChildItem -Recurse -Path "*patches*" -Filter "*vpx*" -File
+          foreach ($p in $vpxPatches) {
+            Write-Host "=== PATCH: $($p.FullName) ==="
+            Get-Content $p.FullName
+          }
+
+      - name: 4. DC Config & Public Keys Location
+        shell: pwsh
+        run: |
+          Write-Host "=== CONFIG / KEYS FILES ==="
+          Get-ChildItem -Recurse -Include "*config.h*","*public_key*","*dc_options*" -File | Where-Object { $_.FullName -notmatch "\\.git\\" } | Select-Object FullName
