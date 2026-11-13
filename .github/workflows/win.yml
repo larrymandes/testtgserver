@@ -101,6 +101,10 @@ jobs:
           key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-${{ env.CACHE_KEY }}
           restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-
 
+      - name: Fix MSYS2 diffutils package name.
+        shell: bash
+        run: sed -i 's/mingw-w64-x86_64-diffutils/diffutils/g' "$TBUILD/$REPO_NAME/$PREPARE_PATH"
+
       - name: Libraries.
         env:
           GYP_MSVS_OVERRIDE_PATH: 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\'
