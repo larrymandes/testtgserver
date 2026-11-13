@@ -95,20 +95,19 @@ jobs:
           key: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-${{ env.CACHE_KEY }}
           restore-keys: ${{ runner.OS }}-${{ matrix.arch }}-${{ matrix.qt || 'qt' }}-v5-
 
-      - name: Patch prepare.py for MSYS2 & libvpx install.
+      - name: Patch prepare.py (diffutils, sequential libvpx make).
         shell: pwsh
         run: |
           $prep = "$env:TBUILD\$env:REPO_NAME\$env:PREPARE_PATH"
           $content = Get-Content $prep -Raw
           $content = $content.Replace('mingw-w64-x86_64-diffutils', 'diffutils')
-
           $target = 'bash --login ../patches/build_libvpx_win.sh'
-          $replacement = @'
-          python -c "p='../patches/build_libvpx_win.sh'; s=open(p).read(); s=s.replace('make -j\$NUMBER_OF_PROCESSORS install', 'make vpx.pc && mkdir -p \$FullScriptPath/../local/include/vpx \$FullScriptPath/../local/lib/pkgconfig && cp -f vpx/*.h \$FullScriptPath/../local/include/vpx/ && cp -f vpx.pc \$FullScriptPath/../local/lib/pkgconfig/ && cp -f x64/Release/vpxmt.lib \$FullScriptPath/../local/lib/ && cp -f x64/Debug/vpxmtd.lib \$FullScriptPath/../local/lib/ 2>/dev/null || true'); open(p,'w').write(s)"
-              bash --login ../patches/build_libvpx_win.sh
+          $fix = @'
+          python -c "import re; p='../patches/build_libvpx_win.sh'; s=open(p,newline='').read(); open(p,'w',newline='').write(re.sub(r'make -j\S+','make -j1',s))"
+          bash --login ../patches/build_libvpx_win.sh
           '@
           if (-not $content.Contains($target)) { throw "Target string not found in prepare.py" }
-          $content = $content.Replace($target, $replacement)
+          $content = $content.Replace($target, $fix)
           Set-Content $prep -Value $content -NoNewline
 
       - name: Detect Visual Studio path.
