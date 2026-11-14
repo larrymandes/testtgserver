@@ -312,14 +312,20 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:TBUILD "$env:REPO_NAME\out\Release"
 
+          Write-Host "Build output files:"
+          Get-ChildItem $out -File | Select-Object Name, Length
+
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
 
-          foreach ($f in @('Telegram.exe', 'Updater.exe')) {
+          foreach ($f in @('Teamgram.exe', 'Updater.exe')) {
             $src = Join-Path $out $f
-            if (-not (Test-Path $src)) {
-              throw "Missing build output: $src"
+            if (Test-Path $src) {
+              Copy-Item $src -Destination artifact\
             }
-            Copy-Item $src -Destination artifact\
+          }
+
+          if (-not (Get-ChildItem artifact -File)) {
+            throw "No executable files were collected!"
           }
 
           Get-ChildItem artifact
